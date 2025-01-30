@@ -1,13 +1,25 @@
 import datetime
 
 from collections import defaultdict
-
 from atproto import models
 
 from server import config
 from server.logger import logger
 from server.database import db, Post
 
+# Added section begin
+from langdetect import detect, LangDetectException
+import re
+from collections import defaultdict
+# Added section end
+
+# Added section begin
+def clean_text(text: str) -> str:
+    """Remove URLs and mentions for better language detection"""
+    text = re.sub(r'http\S+', '', text)  # Remove URLs
+    text = re.sub(r'@\w+', '', text)     # Remove mentions
+    return text.strip().lower()
+# Added section end
 
 def is_archive_post(record: 'models.AppBskyFeedPost.Record') -> bool:
     # Sometimes users will import old posts from Twitter/X which con flood a feed with
@@ -67,21 +79,27 @@ def operations_callback(ops: defaultdict) -> None:
         if should_ignore_post(record):
             continue
 
-        # only python-related posts
-        if 'python' in record.text.lower():
-            reply_root = reply_parent = None
-            if record.reply:
-                reply_root = record.reply.root.uri
-                reply_parent = record.reply.parent.uri
-
-            post_dict = {
-                'uri': created_post['uri'],
-                'cid': created_post['cid'],
-                'reply_parent': reply_parent,
-                'reply_root': reply_root,
-            }
-            posts_to_create.append(post_dict)
-
+        # Apply language detection for Italian posts
+        cleaned_text = clean_text(record.text)
+        if cleaned_text:
+            try:
+                if detect(cleaned_text) == 'it':
+                    reply_root = reply_parent = None
+                    if record.reply:
+                        reply_root = record.reply.root.uri
+                        reply_parent = record.reply.parent.uri
+                    # Keep the existing post creation logic
+                    post_dict = {
+                        'uri': created_post['uri'],
+                        'cid': created_post['cid'],
+                        'reply_parent': reply_parent,
+                        'reply_root': reply_root,
+                    }
+                    posts_to_create.append(post_dict)
+            except LangDetectException:
+                logger.debug(f'Language detection failed for: {record.uri}')
+            except Exception as e:
+                logger.error(f'Unexpected error processing post {record.uri}: {str(e)}')
     posts_to_delete = ops[models.ids.AppBskyFeedPost]['deleted']
     if posts_to_delete:
         post_uris_to_delete = [post['uri'] for post in posts_to_delete]
